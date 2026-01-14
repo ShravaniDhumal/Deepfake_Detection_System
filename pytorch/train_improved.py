@@ -35,6 +35,11 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
     correct = 0
     total = 0
     
+    # Handle empty train loader
+    if len(train_loader) == 0:
+        logger.error("Training loader is empty!")
+        return float('inf'), 0.0
+    
     for images, labels in train_loader:
         images, labels = images.to(device), labels.to(device)
         
@@ -53,8 +58,15 @@ def train_epoch(model, train_loader, criterion, optimizer, device):
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
     
+    # Calculate averages (len(train_loader) > 0 guaranteed due to check above)
     avg_loss = total_loss / len(train_loader)
-    accuracy = 100 * correct / total
+    
+    # Handle division by zero for accuracy (shouldn't happen but safety check)
+    if total == 0:
+        accuracy = 0.0
+    else:
+        accuracy = 100 * correct / total
+    
     return avg_loss, accuracy
 
 def validate(model, val_loader, criterion, device):
@@ -63,6 +75,11 @@ def validate(model, val_loader, criterion, device):
     total_loss = 0
     correct = 0
     total = 0
+    
+    # Handle empty validation loader
+    if len(val_loader) == 0:
+        logger.warning("Validation loader is empty, returning default values")
+        return float('inf'), 0.0
     
     with torch.no_grad():
         for images, labels in val_loader:
@@ -75,8 +92,15 @@ def validate(model, val_loader, criterion, device):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
     
+    # Calculate averages (len(val_loader) > 0 guaranteed due to early return above)
     avg_loss = total_loss / len(val_loader)
-    accuracy = 100 * correct / total
+    
+    # Handle division by zero for accuracy (shouldn't happen but safety check)
+    if total == 0:
+        accuracy = 0.0
+    else:
+        accuracy = 100 * correct / total
+    
     return avg_loss, accuracy
 
 def main():
@@ -186,34 +210,54 @@ def main():
                 model, train_loader, criterion, optimizer, device
             )
             
-            # Validate
-            val_loss, val_acc = validate(model, val_loader, criterion, device)
-            
-            # Learning rate scheduling
-            scheduler.step(val_loss)
-            
-            logger.info(
-                f"Epoch {epoch+1}/{config['training']['epochs']} - "
-                f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% - "
-                f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%"
-            )
-            
-            # Save best model
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                torch.save(model.state_dict(), best_model_path)
-                logger.info(f"Best model saved (val_loss: {val_loss:.4f})")
+            # Validate (skip if validation loader is empty)
+            if len(val_loader) > 0:
+                val_loss, val_acc = validate(model, val_loader, criterion, device)
+                
+                # Learning rate scheduling
+                scheduler.step(val_loss)
+                
+                logger.info(
+                    f"Epoch {epoch+1}/{config['training']['epochs']} - "
+                    f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% - "
+                    f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%"
+                )
+                
+                # Save best model
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    torch.save(model.state_dict(), best_model_path)
+                    logger.info(f"Best model saved (val_loss: {val_loss:.4f})")
+                else:
+                    patience_counter += 1
+                    if patience_counter >= patience:
+                        logger.info(f"Early stopping at epoch {epoch+1}")
+                        break
             else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.info(f"Early stopping at epoch {epoch+1}")
-                    break
+                # No validation data available
+                logger.info(
+                    f"Epoch {epoch+1}/{config['training']['epochs']} - "
+                    f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}% - "
+                    f"Val Loss: N/A, Val Acc: N/A"
+                )
+                # Skip early stopping logic when no validation data
+                # Still save model periodically (every epoch in this case)
+                torch.save(model.state_dict(), best_model_path)
+                logger.info(f"Model saved (no validation data available)")
         
         # Load best model and save final version
-        model.load_state_dict(torch.load(best_model_path))
+        if os.path.exists(best_model_path):
+            model.load_state_dict(torch.load(best_model_path))
+            logger.info(f"Loaded best model from {best_model_path}")
+        else:
+            logger.warning(f"Best model file not found at {best_model_path}, using current model state")
+        
         final_path = config["model"]["save_path"]
-        os.makedirs(os.path.dirname(final_path), exist_ok=True)
+        # Create directory if path contains a directory component
+        final_dir = os.path.dirname(final_path)
+        if final_dir:  # Only create directory if path has a directory component
+            os.makedirs(final_dir, exist_ok=True)
         torch.save(model.state_dict(), final_path)
         logger.info(f"Final model saved to {final_path}")
         

@@ -1,6 +1,7 @@
 """
 Improved webcam detector with better error handling and features
 """
+import os
 import cv2
 import tensorflow as tf
 import numpy as np
@@ -155,7 +156,7 @@ class WebcamDetector:
                         
                         # Get prediction
                         probs = tf.nn.softmax(prediction, axis=1).numpy()[0]
-                        label = int(tf.argmax(prediction, axis=1))
+                        label = int(tf.argmax(prediction, axis=1).numpy()[0])
                         confidence = float(probs[label])
                         
                         # Update temporal detector
@@ -195,6 +196,5 @@ class WebcamDetector:
             logger.info("Camera released")
 
 if __name__ == "__main__":
-    import os
     detector = WebcamDetector()
     detector.run()
