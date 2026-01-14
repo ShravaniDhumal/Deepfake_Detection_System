@@ -72,7 +72,8 @@ def test_imports():
     # Test ONNX
     try:
         import onnx
-        results["onnx"] = f"✅ {onnx.__version__}"
+        version = getattr(onnx, '__version__', 'unknown')
+        results["onnx"] = f"✅ {version}"
     except ImportError as e:
         results["onnx"] = f"❌ {str(e)}"
     

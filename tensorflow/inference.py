@@ -2,9 +2,7 @@
 Inference utilities for TensorFlow model
 """
 import tensorflow as tf
-import numpy as np
 import cv2
-from pathlib import Path
 from typing import Union, List, Tuple
 from preprocess import preprocess_face
 

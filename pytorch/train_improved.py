@@ -5,7 +5,6 @@ import torch
 import yaml
 import os
 import logging
-from pathlib import Path
 from torch.utils.data import DataLoader
 from torch import nn, optim
 try:

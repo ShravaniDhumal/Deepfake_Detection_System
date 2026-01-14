@@ -1,10 +1,6 @@
 """
 Visualize training results and metrics
 """
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
 import json
 from utils import plot_training_history, plot_confusion_matrix
 

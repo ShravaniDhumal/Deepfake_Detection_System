@@ -4,7 +4,6 @@ Project Runner - Tests what can be run and shows what's needed
 """
 import os
 import sys
-from pathlib import Path
 
 def check_dependencies():
     """Check which dependencies are available"""
@@ -46,14 +45,13 @@ def check_project_structure():
     print("=" * 80)
     
     required_files = [
-        'pytorch/train.py',
         'pytorch/train_improved.py',
-        'pytorch/dataset.py',
         'pytorch/dataset_improved.py',
         'pytorch/models/xception.py',
         'pytorch/config.yaml',
-        'tensorflow/webcam_detector.py',
         'tensorflow/webcam_detector_improved.py',
+        'tensorflow/preprocess.py',
+        'tensorflow/temporal_logic.py',
         'evaluation/evaluate_model.py',
         'requirements.txt',
         'README.md'

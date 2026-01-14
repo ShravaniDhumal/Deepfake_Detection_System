@@ -3,7 +3,6 @@ Convert PyTorch model to TensorFlow SavedModel format
 """
 import torch
 import tensorflow as tf
-import numpy as np
 from models.xception import get_xception
 from pathlib import Path
 

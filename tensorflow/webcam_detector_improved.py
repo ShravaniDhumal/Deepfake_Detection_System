@@ -4,7 +4,6 @@ Improved webcam detector with better error handling and features
 import os
 import cv2
 import tensorflow as tf
-import numpy as np
 import time
 import logging
 from mtcnn import MTCNN
