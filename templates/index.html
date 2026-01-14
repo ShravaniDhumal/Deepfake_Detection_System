@@ -381,13 +381,18 @@
 
                 <!-- Webcam Tab -->
                 <div id="cam-tab" class="tab-content">
-                    <video id="webcam" autoplay playsinline style="display: none;"></video>
+                    <canvas id="webcam" style="display: none; width: 100%; max-width: 500px; border-radius: 10px;"></canvas>
                     <div id="cameraStatus" style="color: #999; text-align: center; padding: 40px;">
                         📷 Click start to use webcam
                     </div>
-                    <button onclick="startWebcam()" id="startCamBtn" style="width: 100%;">🎥 Start Webcam</button>
-                    <button onclick="stopWebcam()" id="stopCamBtn" style="width: 100%; display: none;">⏹️ Stop Webcam</button>
-                    <button onclick="captureFrame()" id="captureBtn" style="width: 100%; display: none;">📷 Capture & Analyze</button>
+                    <button onclick="startWebcam()" id="startCamBtn" style="width: 100%; margin-bottom: 10px;">🎥 Start Webcam</button>
+                    <button onclick="stopWebcam()" id="stopCamBtn" style="width: 100%; display: none; margin-bottom: 10px;">⏹️ Stop Webcam</button>
+                    <button onclick="captureFrame()" id="captureBtn" style="width: 100%; display: none; margin-bottom: 20px;">📷 Capture & Analyze</button>
+                    
+                    <!-- Real-time Detection Results -->
+                    <div id="webcamDetections" style="margin-top: 20px; padding: 15px; background: #f8f9ff; border-radius: 8px; display: none;">
+                        <p style="color: #999;">Waiting for detections...</p>
+                    </div>
                 </div>
             </div>
 
@@ -612,45 +617,115 @@
 
         async function startWebcam() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-                const video = document.getElementById('webcam');
-                video.srcObject = stream;
-                webcamStream = stream;
+                // Start server-side webcam
+                const response = await fetch('/api/webcam/start', { method: 'POST' });
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to start webcam');
+                }
+                
+                const canvas = document.getElementById('webcam');
+                canvas.style.display = 'block';
                 
                 document.getElementById('cameraStatus').style.display = 'none';
                 document.getElementById('startCamBtn').style.display = 'none';
                 document.getElementById('stopCamBtn').style.display = 'block';
-                document.getElementById('captureBtn').style.display = 'block';
-                video.style.display = 'block';
+                document.getElementById('webcamDetections').style.display = 'block';
+                
+                // Start real-time detection loop
+                webcamDetectionLoop();
+                
             } catch (error) {
-                alert('Error accessing webcam: ' + error.message);
+                const errorMsg = error.message.includes('macOS') || error.message.includes('Camera') || error.message.includes('System Settings')
+                    ? error.message
+                    : `Error starting webcam: ${error.message}\n\nOn macOS:\n1. Open System Settings > Privacy & Security > Camera\n2. Enable camera access for Terminal\n3. Restart this app\n4. Try again`;
+                    
+                alert(errorMsg);
+                console.error('Webcam error:', error);
             }
         }
 
         function stopWebcam() {
-            if (webcamStream) {
-                webcamStream.getTracks().forEach(track => track.stop());
-                document.getElementById('webcam').style.display = 'none';
-                document.getElementById('cameraStatus').style.display = 'block';
-                document.getElementById('startCamBtn').style.display = 'block';
-                document.getElementById('stopCamBtn').style.display = 'none';
-                document.getElementById('captureBtn').style.display = 'none';
+            fetch('/api/webcam/stop', { method: 'POST' });
+            
+            document.getElementById('webcam').style.display = 'none';
+            document.getElementById('cameraStatus').style.display = 'block';
+            document.getElementById('startCamBtn').style.display = 'block';
+            document.getElementById('stopCamBtn').style.display = 'none';
+            
+            // Stop detection loop
+            if (webcamDetectionInterval) {
+                clearInterval(webcamDetectionInterval);
             }
         }
 
+        let webcamDetectionInterval = null;
+
+        async function webcamDetectionLoop() {
+            // Update frame every 500ms (real-time detection)
+            webcamDetectionInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/webcam/frame');
+                    if (!response.ok) return;
+                    
+                    const data = await response.json();
+                    
+                    // Display frame
+                    const canvas = document.getElementById('webcam');
+                    const ctx = canvas.getContext('2d');
+                    
+                    const img = new Image();
+                    img.onload = function() {
+                        ctx.drawImage(img, 0, 0);
+                    };
+                    img.src = 'data:image/jpeg;base64,' + data.frame;
+                    
+                    // Update detection results
+                    if (data.detections && data.detections.length > 0) {
+                        let detectionHtml = '<h4>Real-time Detections:</h4>';
+                        data.detections.forEach((det, idx) => {
+                            const isReal = det.label === 'REAL';
+                            detectionHtml += `
+                                <div class="face-result">
+                                    <span class="label ${isReal ? 'real' : 'deepfake'}">
+                                        ${det.label} - ${det.confidence}%
+                                    </span>
+                                </div>
+                            `;
+                        });
+                        document.getElementById('webcamDetections').innerHTML = detectionHtml;
+                    } else {
+                        document.getElementById('webcamDetections').innerHTML = '<p style="color: #999;">No faces detected...</p>';
+                    }
+                    
+                } catch (error) {
+                    console.error('Detection error:', error);
+                }
+            }, 500);  // Update every 500ms
+        }
+
         function captureFrame() {
-            const video = document.getElementById('webcam');
-            const canvas = document.createElement('canvas');
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
-            
+            // Capture and analyze current frame
+            const canvas = document.getElementById('webcam');
             canvas.toBlob(blob => {
-                const file = new File([blob], 'webcam_capture.png', { type: 'image/png' });
-                currentImageFile = file;
-                document.getElementById('fileName').textContent = 'Webcam capture (ready to analyze)';
-                analyzeImage();
-            });
+                const formData = new FormData();
+                formData.append('file', blob, 'webcam_capture.png');
+                
+                fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Error: ' + data.error);
+                    } else {
+                        displayResults(data);
+                        updateStats();
+                    }
+                });
+            }, 'image/png');
         }
 
         // Auto-update stats every 5 seconds
