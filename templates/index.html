@@ -554,24 +554,38 @@
                 if (face.label === 'REAL') realCount++;
                 
                 const isReal = face.label === 'REAL';
-                const confidence = face.confidence;
+                const confidence = Math.min(Math.max(parseFloat(face.confidence) || 0, 0), 100);
+                const labelText = isReal ? 'REAL' : 'DEEPFAKE';
                 
-                const html = `
-                    <div class="face-result">
-                        <div>
-                            <span class="label ${isReal ? 'real' : 'deepfake'}">
-                                ${face.label}
-                            </span>
-                        </div>
-                        <div class="confidence-bar">
-                            <div class="confidence-fill" style="width: ${confidence}%;">
-                                ${confidence}%
-                            </div>
-                        </div>
-                        <small style="color: #999;">Face ${index + 1}</small>
-                    </div>
-                `;
-                faceResults.innerHTML += html;
+                const faceDiv = document.createElement('div');
+                faceDiv.className = 'face-result';
+                
+                const labelSpan = document.createElement('span');
+                labelSpan.className = `label ${isReal ? 'real' : 'deepfake'}`;
+                labelSpan.textContent = labelText;
+                
+                const labelContainer = document.createElement('div');
+                labelContainer.appendChild(labelSpan);
+                
+                const confidenceBar = document.createElement('div');
+                confidenceBar.className = 'confidence-bar';
+                
+                const confidenceFill = document.createElement('div');
+                confidenceFill.className = 'confidence-fill';
+                confidenceFill.style.width = confidence + '%';
+                confidenceFill.textContent = confidence + '%';
+                
+                confidenceBar.appendChild(confidenceFill);
+                
+                const small = document.createElement('small');
+                small.style.color = '#999';
+                small.textContent = 'Face ' + (index + 1);
+                
+                faceDiv.appendChild(labelContainer);
+                faceDiv.appendChild(confidenceBar);
+                faceDiv.appendChild(small);
+                
+                faceResults.appendChild(faceDiv);
             });
 
             document.getElementById('realCount').textContent = realCount;

@@ -68,7 +68,15 @@ def generate_predictions(model_path: str, data_dir: str,
     y_proba = np.array(all_probs)
     
     # Save predictions
-    output_path = Path(output_dir)
+    # Validate path to prevent traversal attacks
+    output_path = Path(output_dir).resolve()
+    cwd = Path.cwd().resolve()
+    
+    try:
+        output_path.relative_to(cwd)
+    except ValueError:
+        raise ValueError(f"Output path must be within current working directory: {output_path}")
+    
     output_path.mkdir(parents=True, exist_ok=True)
     
     np.save(output_path / "y_true.npy", y_true)

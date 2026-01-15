@@ -1,5 +1,5 @@
 """
-Improved Dataset class with error handling and file filtering
+Improved Dataset class with error handling, file filtering, and Hugging Face dataset support
 """
 import os
 import logging
@@ -17,13 +17,17 @@ class DeepfakeDataset(Dataset):
     Dataset class for loading deepfake detection images.
     
     Args:
-        root_dir: Root directory containing 'real' and 'fake' subdirectories
+        root_dir: Root directory containing 'real' and 'fake' subdirectories (for local data)
+        dataset_name: Hugging Face dataset name (e.g., 'prithivMLmods/OpenDeepfake-Preview')
+        split: Dataset split to use ('train', 'test', 'validation')
         transform: Optional custom transform (default: resize + normalize)
         augment: Whether to apply data augmentation (default: False)
     """
-    def __init__(self, root_dir, transform=None, augment=False):
+    def __init__(self, root_dir=None, dataset_name=None, split='train', transform=None, augment=False):
         self.samples = []
         self.root_dir = root_dir
+        self.dataset_name = dataset_name
+        self.split = split
         
         # Default transform if none provided
         if transform is None:
@@ -49,11 +53,16 @@ class DeepfakeDataset(Dataset):
         else:
             self.transform = transform
 
-        # Load samples with error handling
-        self._load_samples()
+        # Load samples based on source
+        if dataset_name:
+            self._load_huggingface_dataset()
+        elif root_dir:
+            self._load_samples()
+        else:
+            raise ValueError("Either root_dir or dataset_name must be provided")
         
         if len(self.samples) == 0:
-            logger.warning(f"No valid images found in {root_dir}")
+            logger.warning(f"No valid images found in dataset")
 
     def _is_image_file(self, filename: str) -> bool:
         """Check if file is a valid image file"""
@@ -95,20 +104,59 @@ class DeepfakeDataset(Dataset):
                 for path, error in failed_images[:5]:  # Show first 5
                     logger.debug(f"  {path}: {error}")
 
+    def _load_huggingface_dataset(self):
+        """Load dataset from Hugging Face"""
+        try:
+            from datasets import load_dataset
+            logger.info(f"Loading Hugging Face dataset: {self.dataset_name}")
+            dataset = load_dataset(self.dataset_name)
+            
+            if self.split not in dataset:
+                available_splits = list(dataset.keys())
+                raise ValueError(f"Split '{self.split}' not found. Available splits: {available_splits}")
+            
+            split_data = dataset[self.split]
+            logger.info(f"Loaded {len(split_data)} samples from {self.split} split")
+            
+            # Store the dataset split for later access
+            self.hf_dataset = split_data
+            
+        except ImportError:
+            raise ImportError("datasets library is required for Hugging Face dataset loading. Install with: pip install datasets")
+        except Exception as e:
+            logger.error(f"Failed to load Hugging Face dataset: {e}")
+            raise
+
     def __len__(self):
+        if hasattr(self, 'hf_dataset'):
+            return len(self.hf_dataset)
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
-        
-        try:
-            # Re-open image (verify() closes it)
-            image = Image.open(img_path).convert("RGB")
+        if hasattr(self, 'hf_dataset'):
+            # Hugging Face dataset
+            sample = self.hf_dataset[idx]
+            image = sample['image']
+            label = sample['label']
+            
+            # Ensure image is in RGB format
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
             image = self.transform(image)
             return image, label
-        except Exception as e:
-            logger.error(f"Error loading image {img_path}: {e}")
-            # Return a black image as fallback
-            # In production, you might want to skip or retry
-            fallback_image = Image.new('RGB', (224, 224), color='black')
-            return self.transform(fallback_image), label
+        else:
+            # Local dataset
+            img_path, label = self.samples[idx]
+            
+            try:
+                # Re-open image (verify() closes it)
+                image = Image.open(img_path).convert("RGB")
+                image = self.transform(image)
+                return image, label
+            except Exception as e:
+                logger.error(f"Error loading image {img_path}: {e}")
+                # Return a black image as fallback
+                # In production, you might want to skip or retry
+                fallback_image = Image.new('RGB', (224, 224), color='black')
+                return self.transform(fallback_image), label

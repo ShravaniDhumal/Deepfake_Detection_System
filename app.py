@@ -39,16 +39,22 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def load_model():
-    """Load TensorFlow model for inference"""
+    """Load PyTorch model for inference"""
     try:
-        import tensorflow as tf
-        model_path = "tensorflow/model/saved_model"
+        import torch
+        from pytorch.models.xception import get_xception
+
+        model_path = "pytorch/xception_deepfake.pth"
         if os.path.exists(model_path):
-            model = tf.saved_model.load(model_path)
-            logger.info("Model loaded successfully")
+            model = get_xception(num_classes=2)
+            model.load_state_dict(torch.load(model_path, map_location='cpu'))
+            model.eval()
+            logger.info("PyTorch model loaded successfully")
             return model
+        else:
+            logger.warning(f"Model file not found: {model_path}")
     except Exception as e:
-        logger.warning(f"Could not load model: {e}")
+        logger.warning(f"Could not load PyTorch model: {e}")
     return None
 
 def preprocess_face(face_image):
@@ -107,29 +113,32 @@ def analyze_image(image_path):
         
         # Try to load and use model
         try:
-            import tensorflow as tf
+            import torch
             model = load_model()
-            
+
             for (x, y, w, h) in faces:
                 face_crop = image[y:y+h, x:x+w]
-                
+
                 if face_crop.size == 0:
                     continue
-                
+
                 # Preprocess
                 face_input = preprocess_face(face_crop)
-                
+
                 if face_input is None:
                     continue
-                
+
                 # Run inference
                 if model:
                     try:
-                        prediction = model(face_input)
-                        probs = tf.nn.softmax(prediction, axis=1).numpy()[0]
-                        label = int(tf.argmax(prediction, axis=1).numpy()[0])
-                        confidence = float(probs[label])
-                    except:
+                        with torch.no_grad():
+                            face_tensor = torch.from_numpy(face_input).float()
+                            outputs = model(face_tensor)
+                            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+                            label = int(torch.argmax(outputs, dim=1)[0])
+                            confidence = float(probs[label])
+                    except Exception as e:
+                        logger.warning(f"Model inference failed: {e}")
                         # Fallback: random result for demo
                         label = np.random.randint(0, 2)
                         confidence = np.random.uniform(0.6, 0.99)
@@ -137,17 +146,18 @@ def analyze_image(image_path):
                     # Demo mode without trained model
                     label = np.random.randint(0, 2)
                     confidence = np.random.uniform(0.6, 0.99)
-                
+
                 result_label = "DEEPFAKE" if label == 1 else "REAL"
-                
+
                 analysis_results.append({
                     "label": result_label,
                     "confidence": round(confidence * 100, 2),
                     "position": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
                 })
-        
-        except ImportError:
-            # TensorFlow not available - use simple heuristics
+
+        except ImportError as e:
+            logger.warning(f"PyTorch not available: {e}")
+            # Fallback to simple heuristics
             for (x, y, w, h) in faces:
                 # Demo: random result
                 label = np.random.randint(0, 2)
@@ -253,9 +263,23 @@ def get_stats():
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     """Serve uploaded file"""
-    return send_file(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+    # Validate filename to prevent path traversal
+    filename = secure_filename(filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    # Verify file is within upload folder
+    upload_dir = os.path.abspath(app.config['UPLOAD_FOLDER'])
+    abs_filepath = os.path.abspath(filepath)
+    
+    if not abs_filepath.startswith(upload_dir):
+        return jsonify({"error": "Access denied"}), 403
+    
+    if not os.path.exists(abs_filepath):
+        return jsonify({"error": "File not found"}), 404
+    
+    return send_file(abs_filepath)
 
 if __name__ == '__main__':
     logger.info("Starting Deepfake Detection Web App...")
     logger.info("Visit: http://localhost:3000")
-    app.run(debug=True, host='0.0.0.0', port=3000)
+    app.run(debug=False, host='0.0.0.0', port=3000, use_reloader=False)

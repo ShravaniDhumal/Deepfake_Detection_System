@@ -12,3 +12,4 @@ tf2onnx==1.16.0
 matplotlib==3.8.2
 PyYAML==6.0.1
 seaborn==0.13.0
+datasets>=2.0.0
