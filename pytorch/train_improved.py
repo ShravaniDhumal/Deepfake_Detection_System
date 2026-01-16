@@ -7,6 +7,8 @@ import os
 import logging
 from torch.utils.data import DataLoader
 from torch import nn, optim
+import torchvision.transforms as transforms
+from PIL import Image
 try:
     from dataset_improved import DeepfakeDataset
 except ImportError:
@@ -26,6 +28,56 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+class AugmentedDataset(torch.utils.data.Dataset):
+    """Wrapper dataset to apply different augmentations to subsets"""
+    def __init__(self, dataset, augment=False):
+        self.dataset = dataset
+        self.augment = augment
+        
+        # Create transforms
+        if augment:
+            # Training: with augmentation
+            self.transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.RandomCrop(224),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                   std=[0.5, 0.5, 0.5])
+            ])
+        else:
+            # Validation: no augmentation
+            self.transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5],
+                                   std=[0.5, 0.5, 0.5])
+            ])
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        # Get the original sample
+        if hasattr(self.dataset, 'hf_dataset'):
+            # Hugging Face dataset
+            sample = self.dataset.hf_dataset[idx]
+            image = sample['image']
+            label = sample['label']
+            
+            # Ensure image is in RGB format
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+        else:
+            # Local dataset
+            img_path, label = self.dataset.samples[idx]
+            image = Image.open(img_path).convert("RGB")
+        
+        # Apply transform
+        image = self.transform(image)
+        return image, label
 
 def train_epoch(model, train_loader, criterion, optimizer, device):
     """Train for one epoch"""
@@ -119,40 +171,78 @@ def main():
         logger.info(f"Using device: {device}")
         
         # Load datasets
-        train_dir = config["data"]["train_dir"]
-        val_dir = config["data"]["val_dir"]
+        use_hf_dataset = config["data"].get("use_huggingface_dataset", False)
         
-        if not os.path.exists(train_dir):
-            raise FileNotFoundError(f"Training directory not found: {train_dir}")
-        if not os.path.exists(val_dir):
-            raise FileNotFoundError(f"Validation directory not found: {val_dir}")
+        if use_hf_dataset:
+            # Use Hugging Face dataset
+            hf_dataset_name = config["data"]["huggingface_dataset"]
+            train_split = config["data"].get("train_split", "train")
+            
+            logger.info(f"Using Hugging Face dataset: {hf_dataset_name}")
+            
+            try:
+                # Load the full dataset
+                full_dataset = DeepfakeDataset(dataset_name=hf_dataset_name, split=train_split, augment=False)
+                
+                # Split into train and validation (80/20 split)
+                train_size = int(0.8 * len(full_dataset))
+                val_size = len(full_dataset) - train_size
+                
+                train_dataset, val_dataset = torch.utils.data.random_split(
+                    full_dataset, [train_size, val_size], 
+                    generator=torch.Generator().manual_seed(42)
+                )
+                
+                # Apply augmentation to training dataset by wrapping it
+                train_dataset = AugmentedDataset(train_dataset.dataset, augment=True)
+                val_dataset = AugmentedDataset(val_dataset.dataset, augment=False)
+                
+                logger.info(f"Dataset split: {train_size} train, {val_size} validation samples")
+                
+            except Exception as e:
+                logger.error(f"Failed to load Hugging Face dataset: {e}")
+                raise
+        else:
+            # Use local directories
+            train_dir = config["data"]["train_dir"]
+            val_dir = config["data"]["val_dir"]
+            
+            if not os.path.exists(train_dir):
+                raise FileNotFoundError(f"Training directory not found: {train_dir}")
+            if not os.path.exists(val_dir):
+                raise FileNotFoundError(f"Validation directory not found: {val_dir}")
+            
+            # Try to use improved dataset with augmentation, fallback to original
+            try:
+                train_dataset = DeepfakeDataset(train_dir, augment=True)
+                val_dataset = DeepfakeDataset(val_dir, augment=False)
+            except TypeError:
+                # Original dataset doesn't support augment parameter
+                train_dataset = DeepfakeDataset(train_dir)
+                val_dataset = DeepfakeDataset(val_dir)
         
-        # Try to use improved dataset with augmentation, fallback to original
-        try:
-            train_dataset = DeepfakeDataset(train_dir, augment=True)
-            val_dataset = DeepfakeDataset(val_dir, augment=False)
-        except TypeError:
-            # Original dataset doesn't support augment parameter
-            train_dataset = DeepfakeDataset(train_dir)
-            val_dataset = DeepfakeDataset(val_dir)
         
         if len(train_dataset) == 0:
-            logger.error(f"No training images found in {train_dir}")
-            logger.error("\n" + "="*60)
-            logger.error("TRAINING DATA REQUIRED")
-            logger.error("="*60)
-            logger.error(f"\nPlease add images to:")
-            logger.error(f"  - {os.path.join(train_dir, 'real')}/")
-            logger.error(f"  - {os.path.join(train_dir, 'fake')}/")
-            logger.error(f"\nSupported formats: .jpg, .jpeg, .png, .bmp")
-            logger.error(f"\nExample structure:")
-            logger.error(f"  {train_dir}/")
-            logger.error(f"    ├── real/")
-            logger.error(f"    │   ├── image1.jpg")
-            logger.error(f"    │   └── image2.jpg")
-            logger.error(f"    └── fake/")
-            logger.error(f"        ├── image1.jpg")
-            logger.error(f"        └── image2.jpg")
+            if use_hf_dataset:
+                logger.error(f"No training images found in Hugging Face dataset: {hf_dataset_name}")
+                logger.error("Please check the dataset name and split configuration.")
+            else:
+                logger.error(f"No training images found in {train_dir}")
+                logger.error("\n" + "="*60)
+                logger.error("TRAINING DATA REQUIRED")
+                logger.error("="*60)
+                logger.error(f"\nPlease add images to:")
+                logger.error(f"  - {os.path.join(train_dir, 'real')}/")
+                logger.error(f"  - {os.path.join(train_dir, 'fake')}/")
+                logger.error(f"\nSupported formats: .jpg, .jpeg, .png, .bmp")
+                logger.error(f"\nExample structure:")
+                logger.error(f"  {train_dir}/")
+                logger.error(f"    ├── real/")
+                logger.error(f"    │   ├── image1.jpg")
+                logger.error(f"    │   └── image2.jpg")
+                logger.error(f"    └── fake/")
+                logger.error(f"        ├── image1.jpg")
+                logger.error(f"        └── image2.jpg")
             raise ValueError(f"No training images found in {train_dir}")
         
         if len(val_dataset) == 0:

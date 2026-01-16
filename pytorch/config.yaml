@@ -1,4 +1,11 @@
 data:
+  # Use Hugging Face dataset (recommended)
+  use_huggingface_dataset: true
+  huggingface_dataset: "prithivMLmods/OpenDeepfake-Preview"
+  train_split: "train"
+  val_split: "train"  # Using train split for both, or specify validation split if available
+  
+  # Local data directories (fallback)
   train_dir: ../data/processed/train
   val_dir: ../data/processed/val
   image_size: 224
