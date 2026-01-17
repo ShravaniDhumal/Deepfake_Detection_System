@@ -73,3 +73,6 @@ Thumbs.db
 pytorch/xception_deepfake.pth
 onnx/xception_deepfake.onnx
 training.log
+
+# Snyk Security Extension - AI Rules (auto-generated)
+.github/instructions/snyk_rules.instructions.md

@@ -14,6 +14,14 @@ from io import BytesIO
 import json
 import logging
 
+try:
+    import torch
+    from pytorch.models.xception import get_xception
+    TORCH_AVAILABLE = True
+except Exception as e:  # torch or model import might be missing at runtime
+    TORCH_AVAILABLE = False
+    torch = None
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,39 +42,58 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 # Store analysis results
 analysis_history = []
 
+# Lazy-loaded model cache
+MODEL = None
+DEVICE = torch.device("cuda" if TORCH_AVAILABLE and torch.cuda.is_available() else "cpu") if TORCH_AVAILABLE else None
+WEBCAM = None
+FACE_BLUR_THRESHOLD = 60.0  # lower = blurrier; adjust to tune strictness
+WEBCAM_TARGET_WIDTH = 640
+WEBCAM_JPEG_QUALITY = 70
+
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def load_model():
-    """Load PyTorch model for inference"""
-    try:
-        import torch
-        from pytorch.models.xception import get_xception
+    """Load PyTorch model once and cache it"""
+    global MODEL
 
+    if not TORCH_AVAILABLE:
+        logger.warning("PyTorch not available; running in demo mode")
+        return None
+
+    if MODEL is not None:
+        return MODEL
+
+    try:
         model_path = "pytorch/xception_deepfake.pth"
         if os.path.exists(model_path):
-            model = get_xception(num_classes=2)
-            model.load_state_dict(torch.load(model_path, map_location='cpu'))
-            model.eval()
+            MODEL = get_xception(num_classes=2)
+            MODEL.load_state_dict(torch.load(model_path, map_location=DEVICE))
+            MODEL.to(DEVICE)
+            MODEL.eval()
             logger.info("PyTorch model loaded successfully")
-            return model
         else:
             logger.warning(f"Model file not found: {model_path}")
     except Exception as e:
         logger.warning(f"Could not load PyTorch model: {e}")
-    return None
+        MODEL = None
+
+    return MODEL
 
 def preprocess_face(face_image):
-    """Preprocess face image for model input"""
+    """Preprocess face image for model input (RGB + CHW)"""
     try:
-        # Resize to 224x224
-        face_resized = cv2.resize(face_image, (224, 224))
-        # Normalize
+        # Convert BGR (OpenCV) to RGB, resize, normalize to [-1, 1]
+        face_rgb = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+        face_resized = cv2.resize(face_rgb, (224, 224))
         face_float = face_resized.astype("float32") / 255.0
         face_normalized = (face_float - 0.5) / 0.5
-        # Add batch dimension
-        face_batch = np.expand_dims(face_normalized, axis=0)
+        face_chw = np.transpose(face_normalized, (2, 0, 1))  # (3, 224, 224)
+        face_batch = np.expand_dims(face_chw, axis=0)        # (1, 3, 224, 224)
+
+        if TORCH_AVAILABLE:
+            return torch.from_numpy(face_batch).to(DEVICE)
         return face_batch
     except Exception as e:
         logger.error(f"Preprocessing error: {e}")
@@ -89,17 +116,54 @@ def detect_faces(image):
         logger.error(f"Face detection error: {e}")
         return []
 
-def analyze_image(image_path):
-    """Analyze image for deepfake detection"""
+def create_face_thumbnail(face_crop, size=128):
+    """Create a small base64 thumbnail of a face crop for UI display."""
     try:
-        # Read image
-        image = cv2.imread(image_path)
+        if face_crop is None or face_crop.size == 0:
+            return None
+
+        # Resize with preserve-aspect by fitting into square
+        thumb = cv2.resize(face_crop, (size, size))
+        thumb_rgb = cv2.cvtColor(thumb, cv2.COLOR_BGR2RGB)
+        success, buffer = cv2.imencode('.png', thumb_rgb)
+        if not success:
+            return None
+        b64_thumb = base64.b64encode(buffer).decode('utf-8')
+        return f"data:image/png;base64,{b64_thumb}"
+    except Exception as e:
+        logger.warning(f"Thumbnail generation failed: {e}")
+        return None
+
+def resize_for_stream(frame, target_width=WEBCAM_TARGET_WIDTH):
+    """Downscale frames to reduce bandwidth and lag."""
+    try:
+        h, w = frame.shape[:2]
+        if w <= target_width:
+            return frame
+        scale = target_width / float(w)
+        new_size = (target_width, int(h * scale))
+        return cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+    except Exception as e:
+        logger.warning(f"Resize failed: {e}")
+        return frame
+
+def face_quality_score(face_crop):
+    """Estimate sharpness using Laplacian variance; lower means blurrier face."""
+    try:
+        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    except Exception as e:
+        logger.warning(f"Quality estimation failed: {e}")
+        return 0.0
+
+def analyze_np_image(image):
+    """Analyze an in-memory image array for deepfake detection."""
+    try:
         if image is None:
             return {"error": "Could not read image"}
-        
-        # Detect faces
+
         faces = detect_faces(image)
-        
+
         if len(faces) == 0:
             return {
                 "status": "No faces detected",
@@ -107,14 +171,19 @@ def analyze_image(image_path):
                 "faces": [],
                 "timestamp": datetime.now().isoformat()
             }
-        
-        # Analyze each face
+
         analysis_results = []
-        
-        # Try to load and use model
+        inference_mode = "demo"
+
         try:
-            import torch
             model = load_model()
+
+            if not model or not TORCH_AVAILABLE:
+                return {
+                    "error": "Model not available. Please train or place weights at pytorch/xception_deepfake.pth",
+                    "status": "Model missing",
+                    "mode": "unavailable"
+                }
 
             for (x, y, w, h) in faces:
                 face_crop = image[y:y+h, x:x+w]
@@ -122,61 +191,83 @@ def analyze_image(image_path):
                 if face_crop.size == 0:
                     continue
 
-                # Preprocess
-                face_input = preprocess_face(face_crop)
+                face_tensor = preprocess_face(face_crop)
 
-                if face_input is None:
+                if face_tensor is None:
                     continue
 
-                # Run inference
-                if model:
-                    try:
-                        with torch.no_grad():
-                            face_tensor = torch.from_numpy(face_input).float()
-                            outputs = model(face_tensor)
-                            probs = torch.nn.functional.softmax(outputs, dim=1)[0]
-                            label = int(torch.argmax(outputs, dim=1)[0])
-                            confidence = float(probs[label])
-                    except Exception as e:
-                        logger.warning(f"Model inference failed: {e}")
-                        # Fallback: random result for demo
-                        label = np.random.randint(0, 2)
-                        confidence = np.random.uniform(0.6, 0.99)
-                else:
-                    # Demo mode without trained model
-                    label = np.random.randint(0, 2)
-                    confidence = np.random.uniform(0.6, 0.99)
+                try:
+                    with torch.no_grad():
+                        outputs = model(face_tensor.float())
+                        probs = torch.nn.functional.softmax(outputs, dim=1)[0]
+                        label = int(torch.argmax(outputs, dim=1)[0])
+                        confidence = float(probs[label])
+                        inference_mode = "pytorch"
+                except Exception as e:
+                    logger.warning(f"Model inference failed: {e}")
+                    return {
+                        "error": "Model inference failed. Check weights and input dimensions.",
+                        "status": "Inference error",
+                        "mode": "fallback"
+                    }
 
                 result_label = "DEEPFAKE" if label == 1 else "REAL"
+                thumbnail = create_face_thumbnail(face_crop)
+                quality = face_quality_score(face_crop)
+                confidence_pct = round(confidence * 100, 2)
+
+                # If face is too blurry/unclear, force label to DEEPFAKE with boosted confidence
+                if quality < FACE_BLUR_THRESHOLD:
+                    result_label = "DEEPFAKE"
+                    confidence_pct = max(confidence_pct, 75.0)
 
                 analysis_results.append({
                     "label": result_label,
-                    "confidence": round(confidence * 100, 2),
-                    "position": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
+                    "confidence": confidence_pct,
+                    "position": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)},
+                    "thumbnail": thumbnail,
+                    "quality": round(quality, 2)
                 })
 
         except ImportError as e:
             logger.warning(f"PyTorch not available: {e}")
-            # Fallback to simple heuristics
             for (x, y, w, h) in faces:
-                # Demo: random result
                 label = np.random.randint(0, 2)
                 confidence = np.random.uniform(0.6, 0.99)
                 result_label = "DEEPFAKE" if label == 1 else "REAL"
+
+                thumbnail = create_face_thumbnail(image[y:y+h, x:x+w])
+                quality = face_quality_score(image[y:y+h, x:x+w])
+                confidence_pct = round(confidence * 100, 2)
+
+                if quality < FACE_BLUR_THRESHOLD:
+                    result_label = "DEEPFAKE"
+                    confidence_pct = max(confidence_pct, 75.0)
                 
                 analysis_results.append({
                     "label": result_label,
-                    "confidence": round(confidence * 100, 2),
-                    "position": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
+                    "confidence": confidence_pct,
+                    "position": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)},
+                    "thumbnail": thumbnail,
+                    "quality": round(quality, 2)
                 })
-        
+
         return {
             "status": "Analysis complete",
             "face_count": len(analysis_results),
             "faces": analysis_results,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "mode": inference_mode
         }
-    
+    except Exception as e:
+        logger.error(f"Analysis error: {e}")
+        return {"error": str(e)}
+
+def analyze_image(image_path):
+    """Analyze image from disk path."""
+    try:
+        image = cv2.imread(image_path)
+        return analyze_np_image(image)
     except Exception as e:
         logger.error(f"Analysis error: {e}")
         return {"error": str(e)}
@@ -237,6 +328,89 @@ def analyze_url():
     
     except Exception as e:
         logger.error(f"URL analysis error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def encode_frame_to_base64(frame, quality=WEBCAM_JPEG_QUALITY):
+    """Encode a BGR frame to base64 JPEG for frontend rendering."""
+    try:
+        success, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+        if not success:
+            return None
+        return base64.b64encode(buffer).decode('utf-8')
+    except Exception as e:
+        logger.warning(f"Frame encoding failed: {e}")
+        return None
+
+@app.route('/api/webcam/start', methods=['POST'])
+def start_webcam():
+    """Start webcam capture for live detection."""
+    global WEBCAM
+    try:
+        if WEBCAM is not None and WEBCAM.isOpened():
+            return jsonify({"status": "already_started"})
+
+        WEBCAM = cv2.VideoCapture(0)
+        if not WEBCAM.isOpened():
+            WEBCAM = None
+            return jsonify({"error": "Unable to access webcam"}), 500
+
+        # Hint capture size to reduce bandwidth/lag
+        WEBCAM.set(cv2.CAP_PROP_FRAME_WIDTH, WEBCAM_TARGET_WIDTH)
+        WEBCAM.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        return jsonify({"status": "started"})
+    except Exception as e:
+        logger.error(f"Webcam start error: {e}")
+        WEBCAM = None
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/webcam/frame')
+def webcam_frame():
+    """Return the latest webcam frame with detections."""
+    global WEBCAM
+    if WEBCAM is None or not WEBCAM.isOpened():
+        return jsonify({"error": "Webcam not started"}), 400
+
+    try:
+        ret, frame = WEBCAM.read()
+        if not ret or frame is None:
+            return jsonify({"error": "Failed to read from webcam"}), 500
+
+        frame = resize_for_stream(frame)
+
+        analysis = analyze_np_image(frame)
+        if analysis.get("error"):
+            return jsonify(analysis), 500
+
+        b64_frame = encode_frame_to_base64(frame)
+        if b64_frame is None:
+            return jsonify({"error": "Failed to encode frame"}), 500
+
+        detections = [
+            {"label": face["label"], "confidence": face["confidence"]}
+            for face in analysis.get("faces", [])
+        ]
+
+        return jsonify({
+            "frame": b64_frame,
+            "detections": detections,
+            "mode": analysis.get("mode")
+        })
+    except Exception as e:
+        logger.error(f"Webcam frame error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/webcam/stop', methods=['POST'])
+def stop_webcam():
+    """Stop webcam capture and release resources."""
+    global WEBCAM
+    try:
+        if WEBCAM is not None:
+            WEBCAM.release()
+        WEBCAM = None
+        return jsonify({"status": "stopped"})
+    except Exception as e:
+        logger.error(f"Webcam stop error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/history')

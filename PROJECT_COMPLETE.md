@@ -29,7 +29,7 @@
 
 ### 1. Start the Web App
 ```bash
-cd /Users/cdl_jinesh/Documents/Shravani_Dhumal/Deepfake_Detection_System
+cd /Deepfake_Detection_System
 python app.py
 ```
 
@@ -221,7 +221,7 @@ Deepfake Detection System
 
 ### Step 1: Navigate to Project
 ```bash
-cd /Users/cdl_jinesh/Documents/Shravani_Dhumal/Deepfake_Detection_System
+cd Deepfake_Detection_System
 ```
 
 ### Step 2: Activate Virtual Environment
