@@ -28,12 +28,16 @@ def split_dataset(train_dir, val_dir, val_ratio=0.2):
     print(f"Training set: {len(train_files)} files")
     print(f"Validation set: {len(val_files)} files")
 
-# Split real images
-print("Splitting real images...")
-split_dataset('data/processed/train/real', 'data/processed/val/real')
+def main():
+    # Split real images
+    print("Splitting real images...")
+    split_dataset('data/processed/train/real', 'data/processed/val/real')
 
-# Split fake images
-print("Splitting fake images...")
-split_dataset('data/processed/train/fake', 'data/processed/val/fake')
+    # Split fake images
+    print("Splitting fake images...")
+    split_dataset('data/processed/train/fake', 'data/processed/val/fake')
 
-print("Dataset split complete!")
+    print("Dataset split complete!")
+
+if __name__ == "__main__":
+    main()

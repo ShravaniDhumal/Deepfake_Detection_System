@@ -4,7 +4,6 @@ Extract frames from videos in Test folder and organize into training data
 """
 import cv2
 import os
-from pathlib import Path
 
 def extract_frames_from_videos(video_dir, output_dir, frames_per_video=5):
     """Extract frames from videos in a directory"""

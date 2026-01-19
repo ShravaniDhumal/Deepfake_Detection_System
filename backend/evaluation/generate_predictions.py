@@ -10,10 +10,7 @@ import os
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pytorch'))
 
-try:
-    from dataset_improved import DeepfakeDataset
-except ImportError:
-    from dataset import DeepfakeDataset
+from dataset_improved import DeepfakeDataset
 from models.xception import get_xception
 from torch.utils.data import DataLoader
 

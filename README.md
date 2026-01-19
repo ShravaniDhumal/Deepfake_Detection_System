@@ -256,8 +256,7 @@ backend/
 │   ├── train_improved.py # Main training script
 │   ├── dataset_improved.py
 │   ├── config.yaml       # Training configuration
-│   ├── models/           # Model architecture definitions
-│   └── utils.py          # Utility functions
+│   └── models/           # Model architecture definitions
 ├── tensorflow/           # TensorFlow inference (if needed)
 └── uploads/              # Temporary upload directory
 ```
@@ -413,7 +412,6 @@ This directory contains utility scripts for data processing and project manageme
 ## Scripts
 
 - `extract_frames.py` - Extract frames from video files for training data
-- `extract_frames_final.py` - Alternative frame extraction script
 - `split_dataset.py` - Split dataset into train/validation sets
 
 ## Usage
@@ -508,43 +506,32 @@ The system can also use Hugging Face datasets. See `backend/pytorch/config.yaml`
 This directory contains scripts for evaluating trained deepfake detection models.
 
 ## Scripts
-
-- **evaluate_model.py** - Main evaluation script
-  - Loads ground truth labels (`y_true.npy`)
-  - Loads model predictions (`y_pred.npy`)
-  - Generates confusion matrix and classification report
-
 - **generate_predictions.py** - Generate predictions from a trained model
   - Loads a trained PyTorch model
-  - Runs inference on test data
-  - Saves predictions to `.npy` files
-
-- **metrics.py** - Additional metrics calculation utilities
+  - Runs inference on labeled data
+  - Saves `y_true.npy`, `y_pred.npy`, and `y_proba.npy`
+- **metrics.py** - Evaluate saved predictions
+  - Confusion matrix + classification report
+  - Optional ROC / Precision-Recall curves + JSON export
 
 ## Usage
 
 ### Generate Predictions
-
 ```bash
 cd backend/evaluation
 python generate_predictions.py \
-    --model_path ../../models/xception_deepfake.pth \
-    --data_dir ../../data/processed/val \
-    --output_dir .
+    --model ../../models/xception_deepfake.pth \
+    --data ../../data/processed/val \
+    --output .
 ```
-
-This will create `y_true.npy` and `y_pred.npy` files.
+This will create `y_true.npy`, `y_pred.npy`, and `y_proba.npy`.
 
 ### Evaluate Model
-
 ```bash
 cd backend/evaluation
-python evaluate_model.py
+python metrics.py y_true.npy y_pred.npy y_proba.npy
 ```
-
-This will load `y_true.npy` and `y_pred.npy` and display:
-- Confusion matrix
-- Classification report (precision, recall, F1-score)
+This prints metrics and (by default) writes files like `confusion_matrix.png`, `roc_curve.png`, `pr_curve.png`, and `metrics.json`.
 
 ## Requirements
 

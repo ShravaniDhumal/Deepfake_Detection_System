@@ -11,8 +11,6 @@ import os
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import base64
-from io import BytesIO
-import json
 import logging
 
 try:

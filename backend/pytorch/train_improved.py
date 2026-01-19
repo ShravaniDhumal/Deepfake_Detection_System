@@ -9,13 +9,7 @@ from torch.utils.data import DataLoader
 from torch import nn, optim
 import torchvision.transforms as transforms
 from PIL import Image
-try:
-    from dataset_improved import DeepfakeDataset
-except ImportError:
-    from dataset import DeepfakeDataset
-    # Original dataset doesn't support augment parameter
-    import warnings
-    warnings.warn("Using original dataset.py - augment parameter will be ignored")
+from dataset_improved import DeepfakeDataset
 from models.xception import get_xception
 
 # Setup logging
@@ -237,15 +231,9 @@ def main():
             if not os.path.exists(val_dir):
                 raise FileNotFoundError(f"Validation directory not found: {val_dir}")
             
-            # Try to use improved dataset with augmentation, fallback to original
-            try:
-                train_dataset = DeepfakeDataset(train_dir, augment=True)
-                val_dataset = DeepfakeDataset(val_dir, augment=False)
-            except TypeError:
-                # Original dataset doesn't support augment parameter
-                train_dataset = DeepfakeDataset(train_dir)
-                val_dataset = DeepfakeDataset(val_dir)
-        
+            # Local dataset
+            train_dataset = DeepfakeDataset(train_dir, augment=True)
+            val_dataset = DeepfakeDataset(val_dir, augment=False)
         
         if len(train_dataset) == 0:
             if use_hf_dataset:
