@@ -18,4 +18,4 @@ training:
 
 model:
   pretrained: true
-  save_path: ../pytorch/xception_deepfake.pth
+  save_path: ../../models/xception_deepfake.pth

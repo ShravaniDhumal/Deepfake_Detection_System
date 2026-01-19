@@ -1,9 +1,10 @@
 """
 Flask Web Application for Deepfake Detection
-Provides GUI for uploading photos and live webcam detection
+Provides API endpoints for uploading photos and live webcam detection
 """
 
 from flask import Flask, render_template, request, jsonify, send_file
+from flask_cors import CORS
 import cv2
 import numpy as np
 import os
@@ -16,9 +17,11 @@ import logging
 
 try:
     import torch
-    from pytorch.models.xception import get_xception
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'pytorch'))
+    from models.xception import get_xception
     TORCH_AVAILABLE = True
-except Exception as e:  # torch or model import might be missing at runtime
+except Exception as e:
     TORCH_AVAILABLE = False
     torch = None
 
@@ -26,10 +29,11 @@ except Exception as e:  # torch or model import might be missing at runtime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='../frontend', static_folder='../frontend')
+CORS(app)
 
 # Configuration
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
@@ -50,6 +54,25 @@ FACE_BLUR_THRESHOLD = 60.0  # lower = blurrier; adjust to tune strictness
 WEBCAM_TARGET_WIDTH = 640
 WEBCAM_JPEG_QUALITY = 70
 
+# Model path - look in models directory first, then fallback to pytorch directory
+MODEL_BASE_PATH = os.path.join(os.path.dirname(__file__), '..', 'models')
+MODEL_FALLBACK_PATH = os.path.join(os.path.dirname(__file__), '..', 'pytorch')
+MODEL_FILENAME = 'xception_deepfake.pth'
+
+def get_model_path():
+    """Get the path to the trained model, checking models directory first"""
+    # First check models directory
+    model_path = os.path.join(MODEL_BASE_PATH, MODEL_FILENAME)
+    if os.path.exists(model_path):
+        return model_path
+    
+    # Fallback to pytorch directory
+    model_path = os.path.join(MODEL_FALLBACK_PATH, MODEL_FILENAME)
+    if os.path.exists(model_path):
+        return model_path
+    
+    return None
+
 def allowed_file(filename):
     """Check if file extension is allowed"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -66,15 +89,18 @@ def load_model():
         return MODEL
 
     try:
-        model_path = "pytorch/xception_deepfake.pth"
-        if os.path.exists(model_path):
+        model_path = get_model_path()
+        if model_path and os.path.exists(model_path):
             MODEL = get_xception(num_classes=2)
             MODEL.load_state_dict(torch.load(model_path, map_location=DEVICE))
             MODEL.to(DEVICE)
             MODEL.eval()
-            logger.info("PyTorch model loaded successfully")
+            logger.info(f"PyTorch model loaded successfully from {model_path}")
         else:
-            logger.warning(f"Model file not found: {model_path}")
+            logger.warning(f"Model file not found. Please train a model first.")
+            logger.warning(f"Expected locations:")
+            logger.warning(f"  - {os.path.join(MODEL_BASE_PATH, MODEL_FILENAME)}")
+            logger.warning(f"  - {os.path.join(MODEL_FALLBACK_PATH, MODEL_FILENAME)}")
     except Exception as e:
         logger.warning(f"Could not load PyTorch model: {e}")
         MODEL = None
@@ -180,7 +206,7 @@ def analyze_np_image(image):
 
             if not model or not TORCH_AVAILABLE:
                 return {
-                    "error": "Model not available. Please train or place weights at pytorch/xception_deepfake.pth",
+                    "error": "Model not available. Please train a model first and save it to models/xception_deepfake.pth",
                     "status": "Model missing",
                     "mode": "unavailable"
                 }

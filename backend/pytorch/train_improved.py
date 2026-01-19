@@ -60,20 +60,39 @@ class AugmentedDataset(torch.utils.data.Dataset):
         return len(self.dataset)
     
     def __getitem__(self, idx):
-        # Get the original sample
-        if hasattr(self.dataset, 'hf_dataset'):
+        # Get the original sample - handle Subset, Dataset, or HuggingFace dataset
+        base_dataset = self.dataset
+        
+        # If it's a Subset, get the underlying dataset
+        if isinstance(base_dataset, torch.utils.data.Subset):
+            base_dataset = base_dataset.dataset
+            actual_idx = base_dataset.indices[idx] if hasattr(base_dataset, 'indices') else self.dataset.indices[idx]
+        else:
+            actual_idx = idx
+        
+        # Get sample from base dataset
+        if hasattr(base_dataset, 'hf_dataset'):
             # Hugging Face dataset
-            sample = self.dataset.hf_dataset[idx]
+            sample = base_dataset.hf_dataset[actual_idx]
             image = sample['image']
             label = sample['label']
             
             # Ensure image is in RGB format
             if image.mode != 'RGB':
                 image = image.convert('RGB')
-        else:
-            # Local dataset
-            img_path, label = self.dataset.samples[idx]
+        elif hasattr(base_dataset, 'samples'):
+            # Local dataset with samples list
+            img_path, label = base_dataset.samples[actual_idx]
             image = Image.open(img_path).convert("RGB")
+        else:
+            # Direct dataset access
+            image, label = base_dataset[actual_idx]
+            if isinstance(image, Image.Image):
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+            else:
+                # Already a tensor, return as is
+                return image, label
         
         # Apply transform
         image = self.transform(image)
@@ -188,14 +207,15 @@ def main():
                 train_size = int(0.8 * len(full_dataset))
                 val_size = len(full_dataset) - train_size
                 
-                train_dataset, val_dataset = torch.utils.data.random_split(
+                # Create random split
+                train_subset, val_subset = torch.utils.data.random_split(
                     full_dataset, [train_size, val_size], 
                     generator=torch.Generator().manual_seed(42)
                 )
                 
                 # Apply augmentation to training dataset by wrapping it
-                train_dataset = AugmentedDataset(train_dataset.dataset, augment=True)
-                val_dataset = AugmentedDataset(val_dataset.dataset, augment=False)
+                train_dataset = AugmentedDataset(train_subset, augment=True)
+                val_dataset = AugmentedDataset(val_subset, augment=False)
                 
                 logger.info(f"Dataset split: {train_size} train, {val_size} validation samples")
                 
@@ -203,9 +223,14 @@ def main():
                 logger.error(f"Failed to load Hugging Face dataset: {e}")
                 raise
         else:
-            # Use local directories
+            # Use local directories - resolve relative paths
             train_dir = config["data"]["train_dir"]
             val_dir = config["data"]["val_dir"]
+            
+            # Resolve relative paths from config file location
+            config_dir = os.path.dirname(os.path.abspath(config_path))
+            train_dir = os.path.abspath(os.path.join(config_dir, train_dir))
+            val_dir = os.path.abspath(os.path.join(config_dir, val_dir))
             
             if not os.path.exists(train_dir):
                 raise FileNotFoundError(f"Training directory not found: {train_dir}")
@@ -289,7 +314,15 @@ def main():
         best_val_loss = float('inf')
         patience = 3
         patience_counter = 0
-        best_model_path = config["model"]["save_path"].replace('.pth', '_best.pth')
+        
+        # Save models to models directory (shared across devices)
+        models_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'models')
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # Update paths to save in models directory
+        model_filename = os.path.basename(config["model"]["save_path"])
+        best_model_path = os.path.join(models_dir, model_filename.replace('.pth', '_best.pth'))
+        final_model_path = os.path.join(models_dir, model_filename)
         
         # Training loop
         logger.info("Starting training...")
@@ -316,8 +349,8 @@ def main():
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     patience_counter = 0
-                    torch.save(model.state_dict(), best_model_path)
-                    logger.info(f"Best model saved (val_loss: {val_loss:.4f})")
+                    torch.save(model.state_dict(), best_model_path, _use_new_zipfile_serialization=False)
+                    logger.info(f"Best model saved to {best_model_path} (val_loss: {val_loss:.4f})")
                 else:
                     patience_counter += 1
                     if patience_counter >= patience:
@@ -332,23 +365,21 @@ def main():
                 )
                 # Skip early stopping logic when no validation data
                 # Still save model periodically (every epoch in this case)
-                torch.save(model.state_dict(), best_model_path)
-                logger.info(f"Model saved (no validation data available)")
+                torch.save(model.state_dict(), best_model_path, _use_new_zipfile_serialization=False)
+                logger.info(f"Model saved to {best_model_path} (no validation data available)")
         
         # Load best model and save final version
         if os.path.exists(best_model_path):
-            model.load_state_dict(torch.load(best_model_path))
+            model.load_state_dict(torch.load(best_model_path, map_location=device))
             logger.info(f"Loaded best model from {best_model_path}")
         else:
             logger.warning(f"Best model file not found at {best_model_path}, using current model state")
         
-        final_path = config["model"]["save_path"]
-        # Create directory if path contains a directory component
-        final_dir = os.path.dirname(final_path)
-        if final_dir:  # Only create directory if path has a directory component
-            os.makedirs(final_dir, exist_ok=True)
-        torch.save(model.state_dict(), final_path)
-        logger.info(f"Final model saved to {final_path}")
+        # Save final model to models directory
+        torch.save(model.state_dict(), final_model_path, _use_new_zipfile_serialization=False)
+        logger.info(f"Final model saved to {final_model_path}")
+        logger.info(f"✅ Model can now be used on any device without retraining!")
+        logger.info(f"   Copy the model file to other devices: {final_model_path}")
         
     except Exception as e:
         logger.error(f"Training failed: {e}", exc_info=True)
